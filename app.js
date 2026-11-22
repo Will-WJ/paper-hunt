@@ -627,18 +627,31 @@ function findItem(id) {
 // ---------------- 通讯作者管理 ----------------
 
 let piEdit = null; // null | 'new' | 索引
+let armed = null; // 二次确认状态 { act, idx }
+let armedTimer = null;
+
+function armAction(act, idx) {
+  armed = { act, idx };
+  clearTimeout(armedTimer);
+  armedTimer = setTimeout(() => {
+    armed = null;
+    rerenderPi();
+  }, 4000);
+  rerenderPi();
+}
 
 function piRowHtml(p, i) {
   const instTxt = (p.inst || []).slice(0, 2).join(', ');
   const meta = [p.field, instTxt].filter(Boolean).map(esc).join(' · ');
   const amb = p.ambiguous ? '<span class="tag-amb">常见姓</span>' : '';
+  const delLabel = armed && armed.act === 'del' && armed.idx === i ? '确认删?' : '删';
   return `<div class="pi-item">
     <div class="pi-main">
       <div class="pi-name">${esc(p.name)}${amb}</div>
       ${meta ? `<div class="pi-meta">${meta}</div>` : ''}
     </div>
     <button class="pi-btn" data-pi-act="edit" data-idx="${i}">改</button>
-    <button class="pi-btn danger" data-pi-act="del" data-idx="${i}">删</button>
+    <button class="pi-btn danger" data-pi-act="del" data-idx="${i}">${delLabel}</button>
   </div>`;
 }
 
@@ -684,7 +697,9 @@ function piSectionHtml() {
     <div class="pi-list">${rows || '<p class="hint">还没有添加任何通讯作者</p>'}</div>
     <div class="btnrow">
       <button class="btn" data-pi-act="add">+ 添加通讯作者</button>
-      <button class="btn" data-pi-act="reset">恢复默认</button>
+      <button class="btn" data-pi-act="reset">${
+        armed && armed.act === 'reset' ? '再点一次确认' : '恢复默认'
+      }</button>
     </div>`;
 }
 
@@ -742,14 +757,25 @@ function handlePiAction(act, idx) {
   } else if (act === 'save') {
     savePiForm();
   } else if (act === 'del') {
+    if (!armed || armed.act !== 'del' || armed.idx !== idx) {
+      armAction('del', idx);
+      return;
+    }
     const p = state.pis[idx];
+    armed = null;
     if (!p) return;
     state.pis.splice(idx, 1);
     savePis();
     toast(`已删除 ${p.name}`);
   } else if (act === 'reset') {
+    if (!armed || armed.act !== 'reset') {
+      armAction('reset', -1);
+      return;
+    }
+    armed = null;
     state.pis = JSON.parse(JSON.stringify(DEFAULT_PIS));
     savePis();
+    toast('已恢复默认通讯作者');
   }
 }
 
