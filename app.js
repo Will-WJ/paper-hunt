@@ -429,40 +429,53 @@ function toggleStar(it) {
   persist.stars();
 }
 
-function openDatePicker() {
-  document.querySelectorAll('input.__ph-date').forEach((el) => el.remove());
-  const inp = document.createElement('input');
-  inp.type = 'date';
-  inp.className = '__ph-date';
-  inp.value = state.bx.date;
-  inp.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;border:0;padding:0';
-  document.body.appendChild(inp);
+function openDateSheet() {
+  closeSheet();
+  const today = isoDate();
+  const quick = [
+    { label: '今天', d: today },
+    { label: '昨天', d: addDays(today, -1) },
+    { label: '前天', d: addDays(today, -2) },
+  ];
 
-  inp.addEventListener('change', () => {
-    const v = inp.value;
-    if (v && v !== state.bx.date) {
-      state.bx.date = v;
-      loadBiorxiv();
-    }
-    setTimeout(() => inp.remove(), 500);
+  const sheet = $('#sheet');
+  sheet.innerHTML = `
+    <div class="sheet-handle"></div>
+    <h2>选择日期</h2>
+    <div class="btnrow" style="margin-top:0">
+      ${quick.map((q) => `<button class="btn" data-day="${q.d}">${q.label}</button>`).join('')}
+    </div>
+    <h3>或指定日期</h3>
+    <input type="date" id="date-input" class="date-field" value="${state.bx.date}" max="${today}">
+    <p class="hint">bioRxiv 周末基本不更新，选到周六周日通常是空的。</p>
+    <div class="btnrow">
+      <button class="btn primary" id="date-apply">查看这一天的文章</button>
+    </div>
+  `;
+  $('#backdrop').hidden = false;
+  sheet.hidden = false;
+
+  const apply = (d) => {
+    if (!d) return;
+    state.bx.date = d;
+    if (state.tab !== 'biorxiv') state.tab = 'biorxiv';
+    closeSheet();
+    loadBiorxiv({ allowFallback: true });
+  };
+
+  sheet.querySelectorAll('[data-day]').forEach((b) => {
+    b.addEventListener('click', () => apply(b.dataset.day));
   });
-
-  try {
-    if (inp.showPicker) inp.showPicker();
-    else inp.click();
-  } catch {
-    inp.click();
-  }
-
-  // 用户取消时兜底清理
-  setTimeout(() => inp.isConnected && inp.remove(), 60000);
+  $('#date-apply').addEventListener('click', () => apply($('#date-input').value));
+  // 原生选择器里确认后自动应用
+  $('#date-input').addEventListener('change', (e) => apply(e.target.value));
 }
 
 function onChip(act) {
   const st = state.bx;
   switch (act) {
     case 'date':
-      openDatePicker();
+      openDateSheet();
       return;
     case 'today':
       st.date = isoDate();

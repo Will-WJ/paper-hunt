@@ -1,7 +1,7 @@
 // Service Worker：应用外壳离线可用
 // 数据请求（bioRxiv / Europe PMC）走页面层的 IndexedDB 缓存，不在这里拦
 
-const VERSION = 'v1.0.5';
+const VERSION = 'v1.0.6';
 const CACHE = `ph-${VERSION}`;
 
 // 关键：预缓存时给每个资源加上版本号查询串。
