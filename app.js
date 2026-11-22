@@ -37,12 +37,10 @@ const persist = {
 // ---------------- 数据加载 ----------------
 
 function setProgress(text) {
+  const st = currentStore();
+  if (st) st.progress = text;
   const el = $('#prog');
   if (el) el.textContent = text;
-  else {
-    const st = currentStore();
-    if (st) st.progress = text;
-  }
 }
 
 function currentStore() {
@@ -76,7 +74,10 @@ async function loadBiorxiv({ force = false, allowFallback = false } = {}) {
       raw = await fetchBiorxivDay(day, {
         force: force && i === 0,
         onPage: appendPage,
-        onProgress: (p) => setProgress(`正在抓取 ${p.loaded}/${p.total || '?'} 篇`),
+        onProgress: (p) => {
+          st.total = p.total;
+          setProgress(`正在抓取 ${p.loaded}/${p.total || '?'} 篇`);
+        },
       });
       if (raw.length) break;
       const prev = addDays(day, -1);
@@ -349,7 +350,9 @@ function renderContent() {
 
   const researchTotal = st.items.filter(isResearch).length;
   const stats = isBx
-    ? `${relDay(st.date)} · 共 <b>${total}</b> 篇预印本 · 命中 <b>${hits}</b> 篇`
+    ? st.loading && st.total
+      ? `${relDay(st.date)} · 已抓取 <b>${total}</b>/<b>${st.total}</b> 篇 · 命中 <b>${hits}</b> 篇`
+      : `${relDay(st.date)} · 共 <b>${total}</b> 篇预印本 · 命中 <b>${hits}</b> 篇`
     : `${shortDate(st.from)} – ${shortDate(st.to)} · 共 <b>${total}</b> 篇（研究类 ${researchTotal}） · 相关 <b>${
         hitsOf(state.researchOnly ? st.items.filter(isResearch) : st.items).length
       }</b> 篇`;
@@ -364,7 +367,9 @@ function renderContent() {
     return;
   }
 
-  const tail = st.loading ? '<div class="progress" id="prog">正在加载其余期刊…</div>' : '';
+  const tail = st.loading
+    ? `<div class="progress" id="prog">${esc(st.progress || '正在加载…')}</div>`
+    : '';
   el.innerHTML = `<div class="stats">${stats}</div>` + list.map(cardHtml).join('') + tail;
 }
 

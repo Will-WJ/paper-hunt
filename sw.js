@@ -1,7 +1,7 @@
 // Service Worker：应用外壳离线可用
 // 数据请求（bioRxiv / Europe PMC）走接口自身的 HTTP 缓存与 IndexedDB，不在这里拦
 
-const VERSION = 'v1.0.2';
+const VERSION = 'v1.0.3';
 const CACHE = `ph-${VERSION}`;
 
 const ASSETS = [
