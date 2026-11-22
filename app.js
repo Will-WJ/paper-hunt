@@ -1,12 +1,12 @@
 // 应用入口：状态、渲染、交互
 
-import { APP, JOURNALS, PIS, DEFAULT_KEYWORDS, LS_KEYS } from './js/config.js';
+import { APP, JOURNALS, DEFAULT_PIS, DEFAULT_KEYWORDS, LS_KEYS } from './js/config.js';
 import {
   latestPostingDay, isoDate, addDays, cnDate, relDay, shortDate,
   escapeHtml, authorList, debounce, daysBetween,
 } from './js/utils.js';
 import { fetchBiorxivDay, fetchJournals, isResearch } from './js/api.js';
-import { compileKeywords, evaluate, sortEvaluated } from './js/match.js';
+import { compileKeywords, evaluate, sortEvaluated, preparePis } from './js/match.js';
 import { stateGet, stateSet, cacheClear } from './js/store.js';
 
 const esc = escapeHtml;
@@ -21,6 +21,7 @@ const state = {
   read: stateGet(LS_KEYS.read, {}) || {},
   stars: stateGet(LS_KEYS.stars, {}) || {},
   keywords: stateGet(LS_KEYS.keywords, DEFAULT_KEYWORDS.join('\n')),
+  pis: stateGet(LS_KEYS.pis, null) || JSON.parse(JSON.stringify(DEFAULT_PIS)),
   filter: { biorxiv: 'hit', journals: 'hit' },
   researchOnly: true,
   query: '',
@@ -89,6 +90,7 @@ async function loadBiorxiv({ force = false, allowFallback = false } = {}) {
       toast(`这天还没有更新，已切到 ${relDay(day)}`);
     }
     st.raw = raw;
+    st.partial = raw.__failed || 0;
   } catch (err) {
     st.error = err && err.message ? err.message : '加载失败';
   }
@@ -134,8 +136,9 @@ async function loadJournals({ force = false } = {}) {
 
 function applyEval() {
   state.compiled = compileKeywords(String(state.keywords).split('\n'));
-  state.bx.items = sortEvaluated(state.bx.raw.map((x) => evaluate(x, state.compiled)));
-  state.jr.items = sortEvaluated(state.jr.raw.map((x) => evaluate(x, state.compiled)));
+  state.preparedPis = preparePis(state.pis);
+  state.bx.items = sortEvaluated(state.bx.raw.map((x) => evaluate(x, state.compiled, state.preparedPis)));
+  state.jr.items = sortEvaluated(state.jr.raw.map((x) => evaluate(x, state.compiled, state.preparedPis)));
 }
 
 // ---------------- 过滤 ----------------
@@ -300,7 +303,18 @@ function cardHtml(it) {
       <div class="card-actions">
         <button class="act${starred ? ' starred' : ''}" data-act="star" aria-label="收藏">★</button>
         <button class="act" data-act="copy" aria-label="复制引用">复制</button>
-        ${it.url ? `<a class="act" href="${esc(it.url)}" target="_blank" rel="noopener" data-act="open">原文</a>` : ''}
+        ${
+          it.pdfUrl
+            ? `<a class="act act-pdf" href="${esc(it.pdfUrl)}" target="_blank" rel="noopener" data-act="open" aria-label="打开 PDF">PDF</a>`
+            : ''
+        }
+        ${
+          it.url
+            ? `<a class="act${it.pdfUrl ? ' act-icon' : ''}" href="${esc(it.url)}" target="_blank" rel="noopener" data-act="open" aria-label="打开原文页面">${
+                it.pdfUrl ? '↗' : '原文'
+              }</a>`
+            : ''
+        }
       </div>
     </div>
   </article>`;
@@ -352,7 +366,9 @@ function renderContent() {
   const stats = isBx
     ? st.loading && st.total
       ? `${relDay(st.date)} · 已抓取 <b>${total}</b>/<b>${st.total}</b> 篇 · 命中 <b>${hits}</b> 篇`
-      : `${relDay(st.date)} · 共 <b>${total}</b> 篇预印本 · 命中 <b>${hits}</b> 篇`
+      : `${relDay(st.date)} · 共 <b>${total}</b> 篇预印本 · 命中 <b>${hits}</b> 篇${
+          st.partial ? ` · <span class="warn">${st.partial} 页未抓到</span>` : ''
+        }`
     : `${shortDate(st.from)} – ${shortDate(st.to)} · 共 <b>${total}</b> 篇（研究类 ${researchTotal}） · 相关 <b>${
         hitsOf(state.researchOnly ? st.items.filter(isResearch) : st.items).length
       }</b> 篇`;
@@ -588,6 +604,12 @@ function bindEvents() {
     }, 200)
   );
 
+  $('#sheet').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-pi-act]');
+    if (!btn) return;
+    handlePiAction(btn.dataset.piAct, Number(btn.dataset.idx));
+  });
+
   $('#btn-settings').addEventListener('click', openSettings);
   $('#backdrop').addEventListener('click', closeSheet);
 }
@@ -602,7 +624,137 @@ function findItem(id) {
 
 // ---------------- 设置面板 ----------------
 
+// ---------------- 通讯作者管理 ----------------
+
+let piEdit = null; // null | 'new' | 索引
+
+function piRowHtml(p, i) {
+  const instTxt = (p.inst || []).slice(0, 2).join(', ');
+  const meta = [p.field, instTxt].filter(Boolean).map(esc).join(' · ');
+  const amb = p.ambiguous ? '<span class="tag-amb">常见姓</span>' : '';
+  return `<div class="pi-item">
+    <div class="pi-main">
+      <div class="pi-name">${esc(p.name)}${amb}</div>
+      ${meta ? `<div class="pi-meta">${meta}</div>` : ''}
+    </div>
+    <button class="pi-btn" data-pi-act="edit" data-idx="${i}">改</button>
+    <button class="pi-btn danger" data-pi-act="del" data-idx="${i}">删</button>
+  </div>`;
+}
+
+function piFormHtml() {
+  const isNew = piEdit === 'new';
+  const p = isNew
+    ? { name: '', field: '', aliases: [], inst: [], ambiguous: false }
+    : state.pis[piEdit] || { name: '', field: '', aliases: [], inst: [], ambiguous: false };
+
+  return `<div class="pi-form">
+    <label class="fl">姓名<span class="req">必填</span></label>
+    <input class="field" id="f-name" placeholder="David Baker" value="${esc(p.name)}" autocomplete="off">
+
+    <label class="fl">别名<span class="opt">可选</span></label>
+    <textarea class="field ta" id="f-alias" placeholder="论文里出现的其他写法，每行一个&#10;Baker D&#10;D. Baker">${esc(
+      (p.aliases || []).join('\n')
+    )}</textarea>
+
+    <label class="fl">机构关键词<span class="opt">可选</span></label>
+    <input class="field" id="f-inst" placeholder="University of Washington, HHMI" value="${esc(
+      (p.inst || []).join(', ')
+    )}" autocomplete="off">
+
+    <label class="fl">研究方向<span class="opt">可选</span></label>
+    <input class="field" id="f-field" placeholder="de novo 蛋白设计" value="${esc(p.field || '')}" autocomplete="off">
+
+    <label class="check"><input type="checkbox" id="f-amb" ${
+      p.ambiguous ? 'checked' : ''
+    }> 这个姓氏很常见（只在压轴作者位置才认定）</label>
+
+    <div class="btnrow">
+      <button class="btn primary" data-pi-act="save">保存</button>
+      <button class="btn" data-pi-act="cancel">取消</button>
+    </div>
+    <p class="hint">姓名写成完整形式最准。系统会自动兼容「名 姓」「姓, 名」「姓 首字母」三种顺序，别名用于更特殊的署名。</p>
+  </div>`;
+}
+
+function piSectionHtml() {
+  if (piEdit !== null) return piFormHtml();
+  const rows = state.pis.map(piRowHtml).join('');
+  return `
+    <div class="pi-list">${rows || '<p class="hint">还没有添加任何通讯作者</p>'}</div>
+    <div class="btnrow">
+      <button class="btn" data-pi-act="add">+ 添加通讯作者</button>
+      <button class="btn" data-pi-act="reset">恢复默认</button>
+    </div>`;
+}
+
+function rerenderPi() {
+  const el = $('#pi-section');
+  if (el) el.innerHTML = piSectionHtml();
+}
+
+function savePis() {
+  stateSet(LS_KEYS.pis, state.pis);
+  piEdit = null;
+  applyEval();
+  render();
+  rerenderPi();
+  toast('通讯作者已更新');
+}
+
+function savePiForm() {
+  const name = $('#f-name').value.trim();
+  if (!name) {
+    toast('请先填写姓名');
+    $('#f-name').focus();
+    return;
+  }
+  const dup = state.pis.some(
+    (p, i) => i !== piEdit && p.name.trim().toLowerCase() === name.toLowerCase()
+  );
+  if (dup) {
+    toast('这个通讯作者已经在列表里了');
+    return;
+  }
+
+  const entry = {
+    name,
+    aliases: $('#f-alias').value.split('\n').map((x) => x.trim()).filter(Boolean),
+    inst: $('#f-inst').value.split(',').map((x) => x.trim()).filter(Boolean),
+    field: $('#f-field').value.trim(),
+    ambiguous: $('#f-amb').checked,
+  };
+  if (piEdit === 'new') state.pis.push(entry);
+  else state.pis[piEdit] = { ...state.pis[piEdit], ...entry };
+  savePis();
+}
+
+function handlePiAction(act, idx) {
+  if (act === 'add') {
+    piEdit = 'new';
+    rerenderPi();
+  } else if (act === 'edit') {
+    piEdit = idx;
+    rerenderPi();
+  } else if (act === 'cancel') {
+    piEdit = null;
+    rerenderPi();
+  } else if (act === 'save') {
+    savePiForm();
+  } else if (act === 'del') {
+    const p = state.pis[idx];
+    if (!p) return;
+    state.pis.splice(idx, 1);
+    savePis();
+    toast(`已删除 ${p.name}`);
+  } else if (act === 'reset') {
+    state.pis = JSON.parse(JSON.stringify(DEFAULT_PIS));
+    savePis();
+  }
+}
+
 function openSettings() {
+  piEdit = null;
   const sheet = $('#sheet');
   sheet.innerHTML = `
     <div class="sheet-handle"></div>
@@ -616,12 +768,7 @@ function openSettings() {
     </div>
 
     <h3>关注的通讯作者</h3>
-    <div class="pi-list">
-      ${PIS.map(
-        (p) => `<div class="pi-row"><span class="n">${esc(p.name)}</span><span class="f">${esc(p.field)}</span></div>`
-      ).join('')}
-    </div>
-    <p class="hint">bioRxiv 用通讯作者全名精确匹配；期刊只给姓名缩写，因此只在「压轴作者」位置上标记，并标注为需人工确认。</p>
+    <div id="pi-section">${piSectionHtml()}</div>
 
     <h3>数据</h3>
     <div class="btnrow">

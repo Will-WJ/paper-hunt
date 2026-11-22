@@ -1,16 +1,98 @@
-// 筛选层：关键词匹配 + 关注的 PI 识别（含重名消歧）
+// 筛选层：关键词匹配 + 关注的 PI 识别（含重名消歧与多种姓名写法）
 
-import { PIS } from './config.js';
+import { DEFAULT_PIS } from './config.js';
 import { cleanAuthor } from './utils.js';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
 
 /**
- * 把关键词文本编译成正则
- * - 大小写不敏感
- * - 空格 / 连字符 / 下划线可互换（conformational change / conformational-change）
- * - 允许复数（change → changes），两端加词边界，避免 "design" 命中 "designerly"
+ * 归一化人名：去重音、去标点、小写、压空格
+ * "Kortemme, T." → "kortemme t"
  */
+export function normName(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[.,;:()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 解析人名，兼容文献里的各种写法：
+ *   "David Baker" / "Baker, David" / "Baker D" / "D. Baker" / "Van der Berg J"
+ * 返回 { first, last }
+ */
+export function parsePerson(raw) {
+  const s = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (!s) return null;
+
+  // 逗号分隔一律按「姓, 名」
+  if (s.includes(',')) {
+    const i = s.indexOf(',');
+    const last = s.slice(0, i).trim();
+    if (!last) return null;
+    return { first: s.slice(i + 1).trim(), last };
+  }
+
+  const parts = s.split(' ').filter(Boolean);
+  if (parts.length === 1) return { first: '', last: parts[0] };
+
+  // 末尾只有一个字母 → 「姓 缩写」写法，如 "Kortemme T"
+  const tail = parts[parts.length - 1].replace(/\./g, '');
+  if (tail.length === 1) {
+    return { first: tail, last: parts.slice(0, -1).join(' ') };
+  }
+  return { first: parts.slice(0, -1).join(' '), last: tail };
+}
+
+const words = (s) => normName(s).split(' ').filter(Boolean).map(escapeRe);
+const phraseRe = (parts) => new RegExp(`(?:^|\\s)${parts.join('\\s+')}(?=\\s|$)`);
+
+/** 为一个具体人名生成匹配规则 */
+function personPatterns(person) {
+  const out = [];
+  const last = words(person.last);
+  if (!last.length) return out;
+
+  const first = words(person.first);
+  const initial = first.length ? first[0][0] : '';
+
+  // 全名：正序一定认；反序（Lu Peilong）只在短名字里认，
+  // 避免 "Sarah Baker, David Smith" 这种多人串被误判成 David Baker
+  if (first.length && normName(person.first).length > 1) {
+    out.push({ kind: 'phrase', re: phraseRe([...first, ...last]) });
+    out.push({ kind: 'phrase', rev: true, re: phraseRe([...last, ...first]) });
+  }
+  // 姓 + 首字母缩写
+  if (initial) {
+    out.push({ kind: 'initial', re: phraseRe([...last, initial]) });
+    out.push({ kind: 'initial', rev: true, re: phraseRe([initial, ...last]) });
+  } else {
+    out.push({ kind: 'surname', re: phraseRe(last) });
+  }
+  return out;
+}
+
+/**
+ * 预处理 PI 列表：把姓名、别名都展开成匹配规则
+ * 每次重算前调用一次，避免逐条文献重复构造正则
+ */
+export function preparePis(list) {
+  return (list || [])
+    .filter((p) => p && p.name)
+    .map((p) => {
+      const aliases = (p.aliases || []).filter((a) => String(a).trim());
+      const persons = [parsePerson(p.name), ...aliases.map(parsePerson)].filter(Boolean);
+      const patterns = [];
+      for (const person of persons) patterns.push(...personPatterns(person));
+      return { ...p, inst: (p.inst || []).filter(Boolean), patterns };
+    });
+}
+
+// ---------------- 关键词 ----------------
+
 export function compileKeywords(list) {
   const seen = new Set();
   const out = [];
@@ -35,9 +117,6 @@ export function compileKeywords(list) {
   return out;
 }
 
-/**
- * 返回命中列表 [{ kw, where: 'title' | 'abstract' | 'both' }]
- */
 export function matchKeywords(item, compiled) {
   if (!compiled.length) return [];
   const title = item.title || '';
@@ -53,81 +132,73 @@ export function matchKeywords(item, compiled) {
   return hits;
 }
 
-/** 关键词打分：标题命中权重更高 */
 export function keywordScore(hits) {
   return hits.reduce((s, h) => s + (h.where === 'both' ? 4 : h.where === 'title' ? 3 : 1), 0);
 }
 
 // ---------------- PI 识别 ----------------
 
-const norm = (s) =>
-  String(s || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z\u4e00-\u9fa5\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-/** bioRxiv：通讯作者是全名，可以直接做全名匹配 */
-function matchPreprintCorresponding(item, pi) {
-  const raw = String(item.corresponding || '');
-  if (!raw) return null;
-  const hay = norm(raw);
-  // 保留逗号的轻量归一，用于识别「姓, 名」反序
-  const light = raw.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
-  const first = escapeRe(norm(pi.first));
-  const last = escapeRe(norm(pi.last));
-
-  // 正常顺序："Tanja Kortemme"，可能一人独占，也可能 "; " 分隔多人
-  const forward = new RegExp(`(^|\\s)${first}\\s+${last}(\\s|$)`);
-  // 反序只认严格的「姓, 名」整段格式（如 "Baker, David"），
-  // 否则 "Sarah Baker, David Smith" 会被误判成 David Baker
-  const reverse = new RegExp(`(?:^|[;,])\\s*${last}\\s*,\\s*${first}\\s*(?:[;,]|$)`, 'i');
-
-  if (!forward.test(hay) && !reverse.test(light)) return null;
-
-  let boosted = false;
-  const inst = norm(item.institution);
-  if (inst && pi.inst && pi.inst.some((k) => inst.includes(norm(k)))) boosted = true;
-
-  return { name: pi.name, field: pi.field, strength: 'exact', where: item.institution || '', boosted };
+function instHit(item, pi) {
+  const inst = normName(item.institution);
+  if (!inst) return false;
+  return pi.inst.some((k) => {
+    const needle = normName(k);
+    return needle && inst.includes(needle);
+  });
 }
 
-/** 期刊：作者串只有 "Kortemme T"，只能姓名缩写 + 位置判断 */
-function matchJournalAuthors(item, pi) {
-  const authors = item.authors || [];
-  if (!authors.length) return null;
-  const last = escapeRe(pi.last.toLowerCase());
-  const init = escapeRe(String(pi.initials || '').toLowerCase().slice(0, 1));
-  const re = new RegExp(`(^|[^a-z])${last}\\s+${init}(?:[^a-z]|$)`, 'i');
+/** bioRxiv：通讯作者字段，多数是全名，也可能是缩写 */
+function matchCorresponding(item, pi) {
+  const hay = normName(item.corresponding);
+  if (!hay) return null;
+  // 反序写法只在"像单个人名"的字符串里启用
+  const allowReverse = hay.split(' ').length <= 3;
 
+  for (const pat of pi.patterns) {
+    if (pat.rev && !allowReverse) continue;
+    if (!pat.re.test(hay)) continue;
+    const boosted = instHit(item, pi);
+    // 全名命中、机构对得上、或姓氏本身不常见 → 认定
+    const strong = pat.kind === 'phrase' || boosted || !pi.ambiguous;
+    return {
+      name: pi.name,
+      field: pi.field || '',
+      strength: strong ? 'exact' : 'maybe',
+      kind: pat.kind,
+      boosted,
+      where: item.institution || '',
+    };
+  }
+  return null;
+}
+
+/** 期刊：作者串只有 "Kortemme T"，只能靠缩写 + 位置 */
+function matchAuthors(item, pi) {
+  const authors = item.authors || [];
   for (let i = 0; i < authors.length; i++) {
-    if (re.test(` ${authors[i]} `)) {
-      const isLastAuthor = i === authors.length - 1;
-      // 重名风险高的姓氏，只有压轴作者才敢认
-      const strong = isLastAuthor && !pi.ambiguous;
+    const hay = normName(authors[i]);
+    if (!hay) continue;
+    for (const pat of pi.patterns) {
+      if (!pat.re.test(hay)) continue;
+      const isLast = i === authors.length - 1;
       return {
         name: pi.name,
-        field: pi.field,
-        strength: isLastAuthor ? (pi.ambiguous ? 'last-ambiguous' : 'last') : 'maybe',
+        field: pi.field || '',
+        strength: isLast ? (pi.ambiguous ? 'last-ambiguous' : 'last') : 'maybe',
+        kind: pat.kind,
         position: i + 1,
         of: authors.length,
-        strong: strong || (isLastAuthor && pi.ambiguous),
       };
     }
   }
   return null;
 }
 
-/** 返回该文章命中的 PI 列表（通常 0 或 1 个） */
-export function matchPis(item) {
+export function matchPis(item, prepared) {
+  const pis = prepared || preparePis(DEFAULT_PIS);
   const hits = [];
-  for (const pi of PIS) {
-    const hit =
-      item.source === 'biorxiv'
-        ? matchPreprintCorresponding(item, pi)
-        : matchJournalAuthors(item, pi);
+  for (const pi of pis) {
+    const hit = item.source === 'biorxiv' ? matchCorresponding(item, pi) : matchAuthors(item, pi);
     if (hit) hits.push(hit);
   }
   return hits;
@@ -140,11 +211,10 @@ export function piRank(piHits) {
 }
 
 /** 给一条文献打上筛选结果与排序权重 */
-export function evaluate(item, compiled) {
+export function evaluate(item, compiled, preparedPis) {
   const kw = matchKeywords(item, compiled);
-  const pis = matchPis(item);
-  const score =
-    piRank(pis) * 100 + keywordScore(kw) * 10 + (item.source === 'journal' ? 5 : 0);
+  const pis = matchPis(item, preparedPis);
+  const score = piRank(pis) * 100 + keywordScore(kw) * 10 + (item.source === 'journal' ? 5 : 0);
   return { ...item, kw, pis, score, authorDisplay: (item.authors || []).map(cleanAuthor) };
 }
 

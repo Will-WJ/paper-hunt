@@ -33,7 +33,7 @@ export function canonicalJournal(title = '') {
 // first/last 为全名匹配（bioRxiv 提供通讯作者全名）
 // initials 用于期刊作者串（Europe PMC 只给 "Kortemme T" 这种缩写）
 // inst 为机构佐证词，用于给 "David Baker" 这类重名加可信度
-export const PIS = [
+export const DEFAULT_PIS = [
   {
     name: 'Bruno Correa',
     first: 'bruno',
@@ -81,6 +81,9 @@ export const PIS = [
 
 // ---------- 默认关键词 ----------
 // 每行一个；匹配标题与摘要，不区分大小写，允许连字符/空格互换
+// 兼容旧引用
+export const PIS = DEFAULT_PIS;
+
 export const DEFAULT_KEYWORDS = [
   'protein design',
   'de novo protein design',
@@ -111,5 +114,6 @@ export const LS_KEYS = {
   keywords: 'ph.keywords',
   read: 'ph.read',
   stars: 'ph.stars',
+  pis: 'ph.pis',
   prefs: 'ph.prefs',
 };

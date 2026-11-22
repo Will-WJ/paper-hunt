@@ -28,6 +28,8 @@ function normPreprint(r) {
     category: String(r.category || '').trim(),
     published: String(r.published || '').trim(),
     url: doi ? `https://doi.org/${doi}` : '',
+    // bioRxiv 的 PDF 就是文章页路径加 .full.pdf
+    pdfUrl: doi ? `https://www.biorxiv.org/content/${doi}v${version}.full.pdf` : '',
   };
 }
 
@@ -108,7 +110,8 @@ export async function fetchBiorxivDay(dateStr, { signal, onProgress, onPage, for
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, cursors.length) }, worker));
 
   const items = dedupe(out);
-  // 有缺页就不写缓存，下次打开还能补全
+  // 有缺页就不写缓存，下次打开还能补全；把失败页数带给上层做提示
+  items.__failed = failed;
   if (!failed) await cacheSet(cacheKey, items);
   return items;
 }
@@ -119,6 +122,17 @@ function normArticle(r, journalMeta) {
   const doi = String(r.doi || '').trim();
   const pmid = String(r.pmid || '').trim();
   const types = (r.pubTypeList && r.pubTypeList.pubType) || [];
+  const pmcid = String(r.pmcid || '').trim();
+
+  // 只有开放获取才有真正可下载的 PDF；订阅刊给的是 DOI 页
+  const ftUrls = ((r.fullTextUrlList || {}).fullTextUrl) || [];
+  const pdfEntry = ftUrls.find(
+    (x) => /pdf/i.test(String(x.documentStyle || '')) && !/^doi$/i.test(String(x.site || ''))
+  );
+  let pdfUrl = pdfEntry ? String(pdfEntry.url || '') : '';
+  if (!pdfUrl && pmcid && String(r.isOpenAccess || '') === 'Y') {
+    pdfUrl = `https://europepmc.org/articles/${pmcid}?pdf=render`;
+  }
   return {
     id: `ep:${r.id || doi || pmid}`,
     source: 'journal',
@@ -139,6 +153,8 @@ function normArticle(r, journalMeta) {
       : pmid
       ? `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`
       : '',
+    pdfUrl,
+    pmcid,
   };
 }
 
