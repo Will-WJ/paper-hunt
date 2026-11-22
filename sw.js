@@ -1,10 +1,14 @@
 // Service Worker：应用外壳离线可用
-// 数据请求（bioRxiv / Europe PMC）走接口自身的 HTTP 缓存与 IndexedDB，不在这里拦
+// 数据请求（bioRxiv / Europe PMC）走页面层的 IndexedDB 缓存，不在这里拦
 
-const VERSION = 'v1.0.4';
+const VERSION = 'v1.0.5';
 const CACHE = `ph-${VERSION}`;
 
-const ASSETS = [
+// 关键：预缓存时给每个资源加上版本号查询串。
+// GitHub Pages 的 CDN 对同名文件有 10 分钟缓存，如果发版瞬间 CDN 还是旧内容，
+// 新装的 SW 会把旧文件锁死在缓存里。加上 ?v=版本号 后，每次发版都是全新 URL，
+// CDN 必然回源，就不会再出现"发了新版但用户一直看到旧版"。
+const BASE = [
   './',
   './index.html',
   './styles.css',
@@ -22,11 +26,13 @@ const ASSETS = [
   './icons/apple-touch-icon-180.png',
 ];
 
+const versioned = (p) => (p === './' ? p : `${p}?v=${VERSION}`);
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(ASSETS))
+      .then((cache) => cache.addAll(BASE.map(versioned)))
       .then(() => self.skipWaiting())
       .catch(() => {})
   );
@@ -57,14 +63,16 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE).then((c) => c.put('./index.html', copy)).catch(() => {});
           return res;
         })
-        .catch(() => caches.match('./index.html').then((hit) => hit || caches.match('./')))
+        .catch(() =>
+          caches.match('./index.html', { ignoreSearch: true }).then((hit) => hit || caches.match('./'))
+        )
     );
     return;
   }
 
-  // 静态资源：先给缓存，同时后台更新
+  // 静态资源：先给缓存（忽略版本号查询串），同时后台更新
   event.respondWith(
-    caches.match(req).then((hit) => {
+    caches.match(req, { ignoreSearch: true }).then((hit) => {
       const network = fetch(req)
         .then((res) => {
           if (res && res.ok) {
