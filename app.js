@@ -195,10 +195,10 @@ function renderSubbar() {
     const hits = hitsOf(st.items).length;
     const pis = piHitsOf(st.items).length;
     bar.innerHTML = [
-      chip({ label: `${shortDate(st.date)} ${cnDate(st.date).split(' ')[1]}`, act: 'date' }),
       chip({ label: '今天', act: 'today', on: st.date === isoDate() }),
-      chip({ label: '命中', count: hits, act: 'f-hit', on: state.filter.biorxiv === 'hit' }),
       chip({ label: '★ 关注', count: pis, act: 'f-pi', on: state.filter.biorxiv === 'pi' }),
+      chip({ label: `${shortDate(st.date)} ${cnDate(st.date).split(' ')[1]}`, act: 'date' }),
+      chip({ label: '命中', count: hits, act: 'f-hit', on: state.filter.biorxiv === 'hit' }),
       chip({ label: '全部', count: total, act: 'f-all', on: state.filter.biorxiv === 'all' }),
     ].join('');
   } else if (state.tab === 'journals') {

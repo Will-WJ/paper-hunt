@@ -88,7 +88,7 @@ a { color: inherit; text-decoration: none; }
 /* ---------- 筛选条 ---------- */
 .subbar {
   display: flex;
-  gap: 7px;
+  gap: 6px;
   padding: 10px 14px 8px;
   overflow-x: auto;
   scrollbar-width: none;
@@ -101,7 +101,7 @@ a { color: inherit; text-decoration: none; }
   align-items: center;
   gap: 5px;
   height: 31px;
-  padding: 0 12px;
+  padding: 0 9px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--card);
