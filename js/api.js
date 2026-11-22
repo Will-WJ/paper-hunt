@@ -45,7 +45,7 @@ function dedupe(xs) {
  * 拉取某一天（本地时区 YYYY-MM-DD）的全部 bioRxiv 预印本
  * API 每页 30 条：先取第一页拿到总数，其余页并发抓，避免串行等 9 次往返
  */
-export async function fetchBiorxivDay(dateStr, { signal, onProgress, force } = {}) {
+export async function fetchBiorxivDay(dateStr, { signal, onProgress, onPage, force } = {}) {
   const isToday = dateStr === isoDate();
   const ttl = isToday ? CACHE_TTL.biorxivToday : CACHE_TTL.biorxivPast;
   const cacheKey = `bx:${dateStr}`;
@@ -72,7 +72,9 @@ export async function fetchBiorxivDay(dateStr, { signal, onProgress, force } = {
     await cacheSet(cacheKey, []);
     return [];
   }
-  out.push(...page1.map(normPreprint));
+  const firstItems = page1.map(normPreprint);
+  out.push(...firstItems);
+  if (onPage) onPage(firstItems);
   if (onProgress) onProgress({ loaded: out.length, total });
 
   const step = page1.length;
@@ -94,7 +96,11 @@ export async function fetchBiorxivDay(dateStr, { signal, onProgress, force } = {
         continue;
       }
       const col = data.collection || [];
-      if (col.length) out.push(...col.map(normPreprint));
+      if (col.length) {
+        const got = col.map(normPreprint);
+        out.push(...got);
+        if (onPage) onPage(got);
+      }
       if (onProgress) onProgress({ loaded: out.length, total });
     }
   }

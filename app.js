@@ -55,15 +55,27 @@ async function loadBiorxiv({ force = false, allowFallback = false } = {}) {
   const st = state.bx;
   st.loading = true;
   st.error = null;
+  st.raw = [];
   render();
+
+  const appendPage = (got) => {
+    const seen = new Set(st.raw.map((x) => x.doi || x.id));
+    const fresh = got.filter((x) => !seen.has(x.doi || x.id));
+    if (!fresh.length) return;
+    st.raw.push(...fresh);
+    applyEval();
+    render();
+  };
 
   try {
     let day = st.date;
     let raw = [];
     const maxTries = allowFallback ? 4 : 1;
     for (let i = 0; i < maxTries; i++) {
+      if (i > 0) st.raw = [];
       raw = await fetchBiorxivDay(day, {
         force: force && i === 0,
+        onPage: appendPage,
         onProgress: (p) => setProgress(`正在抓取 ${p.loaded}/${p.total || '?'} 篇`),
       });
       if (raw.length) break;
