@@ -154,7 +154,9 @@ export async function fetchJson(url, { retries = 1, retryDelay = 700, ...opts } 
       const status = err.status || 0;
       const retriable = !status || status === 429 || status >= 500;
       if (!retriable || attempt === retries) throw err;
-      await sleep(retryDelay * (attempt + 1));
+      // 被限流时退避久一点，别在对方说"慢点"的时候继续猛敲
+      const factor = status === 429 ? 4 : attempt + 1;
+      await sleep(retryDelay * factor);
     }
   }
   throw lastErr;
